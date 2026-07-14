@@ -32,6 +32,24 @@ def test_time_derivative_first_frame_is_nan_and_rate_is_correct():
     assert abs(out.iloc[2]["cdt1_deriv"] - 2.0) < 1e-9
 
 
+def test_time_derivative_duplicate_frame_gives_nan_not_infinity():
+    # a real-data failure mode: two rows for the same track share a frame
+    # number (zero time delta) -- must NOT produce inf, which silently
+    # poisons the PCA step much later with a cryptic sklearn error.
+    df = pd.DataFrame(
+        {
+            "track_id": [1, 1, 1],
+            "frame": [0, 1, 1],  # duplicate frame=1
+            "cdt1": [0.0, 12.0, 15.0],
+            "frame_interval_min": [6.0, 6.0, 6.0],
+        }
+    )
+    out = compute_time_derivatives(df, ["cdt1"])
+    duplicate_rows = out[out["frame"] == 1]
+    assert not np.isinf(duplicate_rows["cdt1_deriv"]).any(), duplicate_rows["cdt1_deriv"].tolist()
+    assert duplicate_rows["cdt1_deriv"].isna().any(), duplicate_rows["cdt1_deriv"].tolist()
+
+
 def test_time_derivative_resets_at_track_boundary():
     df = pd.DataFrame(
         {
@@ -84,6 +102,7 @@ def test_pca_umap_drops_nan_rows_rather_than_imputing():
 if __name__ == "__main__":
     _run("time derivative: first frame NaN, rate correct", test_time_derivative_first_frame_is_nan_and_rate_is_correct)
     _run("time derivative resets at track boundary", test_time_derivative_resets_at_track_boundary)
+    _run("time derivative on duplicate frame gives NaN, not infinity", test_time_derivative_duplicate_frame_gives_nan_not_infinity)
     _run("PCA/UMAP separates two distinct clusters", test_pca_umap_separates_two_distinct_clusters)
     _run("PCA/UMAP drops NaN rows rather than imputing", test_pca_umap_drops_nan_rows_rather_than_imputing)
     print("\nAll dimensionality-reduction tests passed.")

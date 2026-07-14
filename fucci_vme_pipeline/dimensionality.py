@@ -11,6 +11,7 @@ that same 1D cycle manifold.
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from .config import PipelineConfig
@@ -25,12 +26,32 @@ def compute_time_derivatives(
     """Per-track frame-to-frame rate of change for each channel
     (intensity-units per minute). NaN at each track's first observed frame,
     since there's no prior point to difference against.
+
+    Also NaN wherever two consecutive rows for the same track share the same
+    frame number (zero time delta) -- found on real data, where this
+    produced a silent divide-by-zero `inf` that only surfaced much later as
+    a cryptic sklearn error inside PCA. A duplicate (track_id, frame) pair
+    has no valid rate of change, so NaN (correctly dropped before the
+    embedding) is the right value, not an infinity that poisons it.
     """
     df = df.sort_values([track_col, frame_col]).copy()
+    delta_time = df.groupby(track_col)[frame_col].diff() * df["frame_interval_min"]
+    zero_delta_time = delta_time == 0
+
+    n_zero = int(zero_delta_time.sum())
+    if n_zero > 0:
+        print(
+            f"Note: {n_zero} row(s) have a duplicate (track_id, frame) pair "
+            "(zero time delta) -- their derivative is set to NaN rather than "
+            "a divide-by-zero infinity. Worth checking upstream if this "
+            "count is large relative to your total row count."
+        )
+
     for ch in channels:
         delta_value = df.groupby(track_col)[ch].diff()
-        delta_time = df.groupby(track_col)[frame_col].diff() * df["frame_interval_min"]
-        df[f"{ch}_deriv"] = delta_value / delta_time
+        deriv = delta_value / delta_time
+        deriv[zero_delta_time] = np.nan
+        df[f"{ch}_deriv"] = deriv
     return df
 
 
