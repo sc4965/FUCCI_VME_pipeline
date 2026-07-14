@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.DS_Store
+*.egg-info/
+.venv/
+venv/
+
+# imaging data and generated outputs -- too large / not meant for version control
+*.nd2
+*.tif
+*.tiff
+*.csv
+*.png
+*.h5
