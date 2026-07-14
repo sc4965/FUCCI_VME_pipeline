@@ -165,6 +165,34 @@ def _merge_tracks_onto_objects(
     return merged
 
 
+def _drop_ambiguous_duplicate_track_frames(df: pd.DataFrame) -> pd.DataFrame:
+    """Drops every row belonging to a (track_id, frame) pair that appears
+    more than once.
+
+    Found on real data: a track can end up with two genuinely different
+    positions claiming the same track_id at the same frame -- most likely
+    btrack inserting a dummy (Kalman-predicted) position to bridge a
+    perceived gap while the real detection for that same frame also gets
+    attributed to the track. Either way, a track whose identity is a
+    mashup of two different physical cells poisons everything built on
+    top of it (per-track normalization, phase calls, exposure). There's no
+    reliable way to tell which of the duplicate entries is "real" from
+    here, so both are dropped rather than silently guessing -- printed
+    loudly so a large count is investigable rather than invisible.
+    """
+    dupe_mask = df.duplicated(subset=["track_id", "frame"], keep=False)
+    n_dupes = int(dupe_mask.sum())
+    if n_dupes > 0:
+        affected_tracks = sorted(df.loc[dupe_mask, "track_id"].unique().tolist())
+        print(
+            f"Note: dropping {n_dupes} row(s) across {len(affected_tracks)} track(s) "
+            "with more than one position at the same frame (ambiguous track "
+            f"identity): track_ids={affected_tracks[:20]}"
+            f"{'...' if len(affected_tracks) > 20 else ''}"
+        )
+    return df[~dupe_mask].copy()
+
+
 def _add_dimensionality_reduction(df: pd.DataFrame, config: PipelineConfig) -> pd.DataFrame:
     """Stage 8, restricted to the FUCCI-4 (non-infected) population -- an
     infected cell's cdt1/slbp/geminin channels are pure background (already
@@ -221,6 +249,7 @@ def run_demo(config: PipelineConfig, max_frames: int | None = None) -> pd.DataFr
     )
 
     df = pd.concat([fucci4_merged, infected_merged], ignore_index=True)
+    df = _drop_ambiguous_duplicate_track_frames(df)
     df["experiment_id"] = "demo"
 
     df = filter_by_track_coverage(df, config, n_total_frames)
@@ -354,6 +383,7 @@ def main() -> None:
         )
 
         df = pd.concat([fucci4_merged, infected_merged], ignore_index=True)
+        df = _drop_ambiguous_duplicate_track_frames(df)
         df["experiment_id"] = source_stem
 
         df = filter_by_track_coverage(df, config, n_total_frames)
