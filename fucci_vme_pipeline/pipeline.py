@@ -16,9 +16,12 @@ btrack/`link_infected_population` are called WITHOUT an intensity image, so
 their reported (x, y) centroids are the same plain pixel-mean as this
 module's own `regionprops_from_labels` -- confirmed by direct testing
 against the real btrack library, not assumed. Rows are joined on
-(frame, x, y) rounded to 6 decimals as a defensive tolerance; the merge
-row-count is asserted to catch any future mismatch loudly rather than
-silently dropping/duplicating cells.
+(frame, x, y) rounded to 6 decimals as a defensive tolerance. A small
+fraction of objects (bounded by `config.track_merge_max_drop_fraction`) may
+legitimately have no matching track -- btrack can reject some initial
+detections as false positives (likely segmentation noise) -- but a larger
+drop, or any row surplus, still raises loudly rather than trusting a
+silently broken join. See `_merge_tracks_onto_objects` for the reasoning.
 """
 from __future__ import annotations
 
@@ -99,7 +102,26 @@ def _labels_for_population(labels: np.ndarray, object_table: pd.DataFrame, popul
     return filtered
 
 
-def _merge_tracks_onto_objects(object_subset: pd.DataFrame, track_df: pd.DataFrame) -> pd.DataFrame:
+def _merge_tracks_onto_objects(
+    object_subset: pd.DataFrame, track_df: pd.DataFrame, max_drop_fraction: float = 0.02
+) -> pd.DataFrame:
+    """Merges tracker output back onto the (green-channel-derived) object
+    table via (frame, x, y), on the confirmed assumption that btrack/the
+    simple linker (called without an intensity image) report the same
+    plain pixel-mean centroid as `regionprops_from_labels`.
+
+    A small fraction of objects can legitimately have NO match: btrack's
+    hypothesis optimizer can classify some initial detections as
+    `Fates.FALSE_POSITIVE` (likely segmentation noise, not real cells) and
+    exclude them from the final track list entirely -- confirmed against a
+    real run where this showed up as a small (~0.1%), bounded gap that
+    tracked with the run's own reported false-positive count. That's
+    correct behavior (btrack rejecting noise), not a broken merge, so a
+    small drop is tolerated here. A drop beyond `max_drop_fraction` is NOT
+    tolerated -- that would suggest the (frame, x, y) join assumption
+    itself has broken, and the output shouldn't be trusted until
+    investigated.
+    """
     if track_df.empty:
         raise ValueError("Tracking produced no output for a non-empty object subset.")
 
@@ -116,12 +138,29 @@ def _merge_tracks_onto_objects(object_subset: pd.DataFrame, track_df: pd.DataFra
         how="inner",
     ).drop(columns=["_x_round", "_y_round"])
 
-    if len(merged) != len(object_subset):
+    n_dropped = len(object_subset) - len(merged)
+    drop_fraction = n_dropped / len(object_subset) if len(object_subset) else 0.0
+
+    if n_dropped > 0:
+        if drop_fraction > max_drop_fraction:
+            raise RuntimeError(
+                f"Track merge dropped {n_dropped}/{len(object_subset)} objects "
+                f"({drop_fraction:.1%}), exceeding the {max_drop_fraction:.1%} "
+                "tolerance for expected false-positive rejection. The "
+                "(frame, x, y) join assumption may have broken -- do not "
+                "trust this output until investigated."
+            )
+        print(
+            f"Note: {n_dropped}/{len(object_subset)} objects ({drop_fraction:.2%}) had no "
+            "matching track -- consistent with btrack's false-positive "
+            "rejection of likely noise detections, not necessarily an error."
+        )
+    if len(merged) > len(object_subset):
         raise RuntimeError(
-            f"Track merge row count mismatch: {len(object_subset)} objects vs. "
-            f"{len(merged)} merged rows. The (frame, x, y) join assumption "
-            "(tracker centroids match regionprops centroids exactly) may "
-            "have broken -- do not trust this output until investigated."
+            f"Track merge produced MORE rows ({len(merged)}) than input objects "
+            f"({len(object_subset)}) -- a duplicate (frame, x, y) key means the "
+            "join can no longer be trusted to be 1:1. Do not trust this output "
+            "until investigated."
         )
     return merged
 
@@ -162,7 +201,9 @@ def run_demo(config: PipelineConfig, max_frames: int | None = None) -> pd.DataFr
     fucci4_labels = _labels_for_population(labels, object_table, "nuclear_candidate")
     fucci4_tracks = track_fucci4_population(fucci4_labels, pixel_size_um, frame_interval_min, config)
     fucci4_objects = object_table[object_table["population"] == "nuclear_candidate"]
-    fucci4_merged = _merge_tracks_onto_objects(fucci4_objects, fucci4_tracks)
+    fucci4_merged = _merge_tracks_onto_objects(
+        fucci4_objects, fucci4_tracks, max_drop_fraction=config.track_merge_max_drop_fraction
+    )
 
     infected_objects = object_table[object_table["population"] == "large_candidate"]
     centroids_per_frame = [
@@ -171,7 +212,13 @@ def run_demo(config: PipelineConfig, max_frames: int | None = None) -> pd.DataFr
     infected_tracks = link_infected_population(
         centroids_per_frame, config.infected_link_max_distance_um, pixel_size_um, frame_interval_min
     )
-    infected_merged = _merge_tracks_onto_objects(infected_objects, infected_tracks) if not infected_objects.empty else infected_objects
+    infected_merged = (
+        _merge_tracks_onto_objects(
+            infected_objects, infected_tracks, max_drop_fraction=config.track_merge_max_drop_fraction
+        )
+        if not infected_objects.empty
+        else infected_objects
+    )
 
     df = pd.concat([fucci4_merged, infected_merged], ignore_index=True)
     df["experiment_id"] = "demo"
@@ -287,7 +334,9 @@ def main() -> None:
         fucci4_labels = _labels_for_population(labels, object_table, "nuclear_candidate")
         fucci4_tracks = track_fucci4_population(fucci4_labels, nuclear.pixel_size_um, nuclear.frame_interval_min, config)
         fucci4_objects = object_table[object_table["population"] == "nuclear_candidate"]
-        fucci4_merged = _merge_tracks_onto_objects(fucci4_objects, fucci4_tracks)
+        fucci4_merged = _merge_tracks_onto_objects(
+        fucci4_objects, fucci4_tracks, max_drop_fraction=config.track_merge_max_drop_fraction
+    )
 
         infected_objects = object_table[object_table["population"] == "large_candidate"]
         centroids_per_frame = [
@@ -297,7 +346,11 @@ def main() -> None:
             centroids_per_frame, config.infected_link_max_distance_um, nuclear.pixel_size_um, nuclear.frame_interval_min
         )
         infected_merged = (
-            _merge_tracks_onto_objects(infected_objects, infected_tracks) if not infected_objects.empty else infected_objects
+            _merge_tracks_onto_objects(
+                infected_objects, infected_tracks, max_drop_fraction=config.track_merge_max_drop_fraction
+            )
+            if not infected_objects.empty
+            else infected_objects
         )
 
         df = pd.concat([fucci4_merged, infected_merged], ignore_index=True)

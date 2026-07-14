@@ -51,6 +51,7 @@ class PipelineConfig:
     # --- Stage 3: tracking ---
     btrack_max_search_radius_um: float = 30.0  # max frame-to-frame displacement for FUCCI-4 tracking
     infected_link_max_distance_um: float = 30.0  # simple-linker gate for the infected population
+    track_merge_max_drop_fraction: float = 0.02  # tolerated fraction of objects btrack may reject as false positives
 
     # --- Stage 4: cell-cycle classification ---
     min_track_coverage: float = 0.6  # fraction of movie frames a track must span to be analyzed
