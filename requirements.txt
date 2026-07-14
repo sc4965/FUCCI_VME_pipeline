@@ -4,8 +4,9 @@ scipy>=1.11
 pandas>=2.0
 matplotlib>=3.7
 
-# Stage 1: ND2 ingestion
+# Stage 1: ingestion (ND2 or channel-split grayscale TIFF)
 nd2>=0.10
+tifffile>=2024.1
 
 # Stage 2: segmentation (lazy-imported; only needed for real segmentation, not --demo)
 cellpose>=3.0

@@ -39,7 +39,7 @@ from .classification import (
 from .config import PipelineConfig
 from .demo import make_synthetic_movie
 from .dimensionality import compute_time_derivatives, run_pca_umap
-from .ingestion import read_nd2_channel
+from .ingestion import ChannelStack, read_nd2_channel, read_tiff_channel
 from .neighbors import compute_delaunay_vme, compute_exposure
 from .segmentation import mean_intensity_by_label, regionprops_from_labels, run_cellpose_sam
 from .tracking import link_infected_population, track_fucci4_population
@@ -190,6 +190,51 @@ def run_demo(config: PipelineConfig, max_frames: int | None = None) -> pd.DataFr
     return df
 
 
+def _load_channels(args: argparse.Namespace, config: PipelineConfig) -> dict[str, ChannelStack]:
+    """Loads all four channels from whichever input format was given.
+    Exactly one of ND2 or TIFF paths must be supplied -- mixing formats
+    isn't supported and mistakenly leaving one set half-filled is a config
+    error worth catching immediately rather than silently picking one.
+    """
+    nd2_paths = [args.nuclear_nd2, args.cdt1_nd2, args.geminin_nd2, args.slbp_nd2]
+    tif_paths = [args.nuclear_tif, args.cdt1_tif, args.geminin_tif, args.slbp_tif]
+    nd2_given = any(p is not None for p in nd2_paths)
+    tif_given = any(p is not None for p in tif_paths)
+
+    if nd2_given and tif_given:
+        raise SystemExit("Pass either --*-nd2 flags or --*-tif flags, not both.")
+
+    if nd2_given:
+        if any(p is None for p in nd2_paths):
+            raise SystemExit("All of --nuclear-nd2/--cdt1-nd2/--geminin-nd2/--slbp-nd2 are required together.")
+        return {
+            "nuclear_infection": read_nd2_channel(args.nuclear_nd2, config),
+            "cdt1": read_nd2_channel(args.cdt1_nd2, config),
+            "geminin": read_nd2_channel(args.geminin_nd2, config),
+            "slbp": read_nd2_channel(args.slbp_nd2, config),
+        }
+
+    if tif_given:
+        if any(p is None for p in tif_paths):
+            raise SystemExit("All of --nuclear-tif/--cdt1-tif/--geminin-tif/--slbp-tif are required together.")
+        return {
+            "nuclear_infection": read_tiff_channel(
+                args.nuclear_tif, config, pixel_size_um=args.pixel_size_um, frame_interval_min=args.frame_interval_min
+            ),
+            "cdt1": read_tiff_channel(
+                args.cdt1_tif, config, pixel_size_um=args.pixel_size_um, frame_interval_min=args.frame_interval_min
+            ),
+            "geminin": read_tiff_channel(
+                args.geminin_tif, config, pixel_size_um=args.pixel_size_um, frame_interval_min=args.frame_interval_min
+            ),
+            "slbp": read_tiff_channel(
+                args.slbp_tif, config, pixel_size_um=args.pixel_size_um, frame_interval_min=args.frame_interval_min
+            ),
+        }
+
+    raise SystemExit("Provide --demo, or all four --*-nd2 flags, or all four --*-tif flags.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="FUCCI/VME analysis pipeline")
     parser.add_argument("--demo", action="store_true", help="Run on synthetic data, no real files needed")
@@ -197,6 +242,22 @@ def main() -> None:
     parser.add_argument("--cdt1-nd2", type=str)
     parser.add_argument("--geminin-nd2", type=str)
     parser.add_argument("--slbp-nd2", type=str)
+    parser.add_argument("--nuclear-tif", type=str, help="mNeonGreen-H1.0 / surface-eGFP channel grayscale TIFF")
+    parser.add_argument("--cdt1-tif", type=str)
+    parser.add_argument("--geminin-tif", type=str)
+    parser.add_argument("--slbp-tif", type=str)
+    parser.add_argument(
+        "--pixel-size-um",
+        type=float,
+        default=None,
+        help="Required for TIFF input unless the file has ImageJ hyperstack calibration metadata",
+    )
+    parser.add_argument(
+        "--frame-interval-min",
+        type=float,
+        default=None,
+        help="Required for TIFF input unless the file has ImageJ hyperstack calibration metadata",
+    )
     parser.add_argument("--max-frames", type=int, default=None, help="Truncate to the first N frames")
     parser.add_argument("--out-csv", type=str, required=True)
     args = parser.parse_args()
@@ -206,14 +267,14 @@ def main() -> None:
     if args.demo:
         df = run_demo(config, max_frames=args.max_frames)
     else:
-        required = [args.nuclear_nd2, args.cdt1_nd2, args.geminin_nd2, args.slbp_nd2]
-        if any(r is None for r in required):
-            parser.error("Real-data mode requires all of --nuclear-nd2/--cdt1-nd2/--geminin-nd2/--slbp-nd2 (or use --demo).")
-
-        nuclear = read_nd2_channel(args.nuclear_nd2, config)
-        cdt1 = read_nd2_channel(args.cdt1_nd2, config)
-        geminin = read_nd2_channel(args.geminin_nd2, config)
-        slbp = read_nd2_channel(args.slbp_nd2, config)
+        channels = _load_channels(args, config)
+        nuclear, cdt1, geminin, slbp = (
+            channels["nuclear_infection"],
+            channels["cdt1"],
+            channels["geminin"],
+            channels["slbp"],
+        )
+        source_stem = Path(nuclear.source_path).stem
 
         images = {"nuclear_infection": nuclear.data, "cdt1": cdt1.data, "geminin": geminin.data, "slbp": slbp.data}
         if args.max_frames is not None:
@@ -240,7 +301,7 @@ def main() -> None:
         )
 
         df = pd.concat([fucci4_merged, infected_merged], ignore_index=True)
-        df["experiment_id"] = Path(args.nuclear_nd2).stem
+        df["experiment_id"] = source_stem
 
         df = filter_by_track_coverage(df, config, n_total_frames)
         df = normalize_per_track(df, list(OTHER_CHANNELS))

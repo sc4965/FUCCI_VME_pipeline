@@ -1,12 +1,23 @@
-"""Stage 1: ND2 ingestion.
+"""Stage 1: ingestion (ND2 or channel-split grayscale TIFF).
 
-Reads a single-channel, already max-intensity-projected (over Z) ND2 stack
-per acquisition channel, i.e. one file per fluorophore, each `(T, Y, X)`.
-Pixel size and frame interval are read from the file's own metadata rather
-than hardcoded, since these differ across experiments.
+Reads a single-channel, already max-intensity-projected (over Z) stack per
+acquisition channel, i.e. one file per fluorophore, each `(T, Y, X)`. Pixel
+size and frame interval are read from the file's own metadata where
+possible rather than hardcoded, since these differ across experiments.
 
-The `nd2` package is imported lazily so that `--demo` mode (see `demo.py`)
-never needs it installed.
+TIFF has a real limitation ND2 doesn't: plain grayscale TIFF exports often
+carry NO calibration metadata at all (confirmed by direct testing --
+`tifffile.TiffFile(...).imagej_metadata` is simply `None` for a bare
+grayscale export). Only ImageJ-saved hyperstacks reliably embed pixel size
+(via the XResolution tag + an `imagej_metadata['unit']` string) and frame
+interval (`imagej_metadata['finterval']`, in seconds). `read_tiff_channel`
+auto-detects these when present, but if they're missing, it fails loudly
+and requires them as explicit arguments rather than guessing -- a wrong
+silent pixel size or frame interval would corrupt every downstream stage
+(exposure radii, phase-transition timing, m_phase_duration).
+
+The `nd2`/`tifffile` packages are imported lazily so that `--demo` mode
+(see `demo.py`) never needs either installed.
 """
 from __future__ import annotations
 
@@ -57,7 +68,8 @@ def _nearest_wavelength(wavelength_nm: float, known: list[int], tol_nm: float = 
 def _wavelength_from_channel_name(name: str, known: list[int]) -> int | None:
     """Laser-line-style channel names (e.g. "488", "Laser 488", "GFP 488")
     often encode the excitation wavelength directly -- try that before
-    falling back to the excitationLambdaNm metadata field.
+    falling back to the excitationLambdaNm metadata field (ND2) or
+    requiring an explicit override (TIFF, which has no such field at all).
     """
     found = [int(n) for n in re.findall(r"\d{3}", name) if int(n) in known]
     if len(found) == 1:
@@ -172,5 +184,109 @@ def read_nd2_channel(
         data=arr,
         pixel_size_um=pixel_size_um,
         frame_interval_min=frame_interval_min,
+        source_path=str(path),
+    )
+
+
+_LENGTH_UNIT_STRINGS = {"um", "micron", "microns", "µm", "u"}
+
+
+def _pixel_size_from_imagej_tags(first_page, imagej_meta: dict, path_name: str) -> float:
+    unit = imagej_meta.get("unit")
+    if unit not in _LENGTH_UNIT_STRINGS:
+        raise ValueError(
+            f"{path_name}: no usable pixel-size unit in ImageJ metadata "
+            f"(found unit={unit!r}). Pass pixel_size_um explicitly."
+        )
+
+    x_tag = first_page.tags.get("XResolution")
+    y_tag = first_page.tags.get("YResolution")
+    if x_tag is None:
+        raise ValueError(f"{path_name}: no XResolution tag found. Pass pixel_size_um explicitly.")
+
+    x_num, x_den = x_tag.value
+    if x_num == 0:
+        raise ValueError(f"{path_name}: invalid XResolution tag value {x_tag.value}.")
+    pixel_size_x_um = x_den / x_num
+
+    if y_tag is not None:
+        y_num, y_den = y_tag.value
+        if y_num > 0:
+            pixel_size_y_um = y_den / y_num
+            if abs(pixel_size_x_um - pixel_size_y_um) > 0.01 * max(pixel_size_x_um, pixel_size_y_um):
+                raise ValueError(
+                    f"{path_name}: non-square pixels (x={pixel_size_x_um}, "
+                    f"y={pixel_size_y_um} {unit}) -- this pipeline assumes "
+                    "square pixels; adjust before proceeding."
+                )
+
+    return float(pixel_size_x_um)
+
+
+def read_tiff_channel(
+    path: str | Path,
+    config: PipelineConfig,
+    pixel_size_um: float | None = None,
+    frame_interval_min: float | None = None,
+    wavelength_override: int | None = None,
+) -> ChannelStack:
+    """Load one channel-split grayscale TIFF stack as a calibrated
+    `(T, Y, X)` stack.
+
+    Auto-detects pixel size and frame interval from ImageJ hyperstack
+    metadata when present; otherwise `pixel_size_um`/`frame_interval_min`
+    must be supplied explicitly (see module docstring for why this isn't
+    guessed). Channel identity has no metadata equivalent to ND2's
+    per-channel record at all, so it's always resolved from the filename
+    (e.g. `..._488.tif`) unless `wavelength_override` is given.
+    """
+    import tifffile  # lazy: only needed for real data, not --demo
+
+    path = Path(path)
+    with tifffile.TiffFile(str(path)) as tf:
+        arr = np.asarray(tf.asarray())
+        arr = np.squeeze(arr)
+        if arr.ndim == 2:
+            arr = arr[None, ...]
+        if arr.ndim != 3:
+            raise ValueError(
+                f"{path.name}: expected (T, Y, X) after squeezing singleton "
+                f"axes, got shape {arr.shape}. If this is a multi-channel or "
+                "un-projected z-stack TIFF, split/project it before ingestion."
+            )
+
+        resolved_pixel_size_um = pixel_size_um
+        resolved_frame_interval_min = frame_interval_min
+        imagej_meta = tf.imagej_metadata or {}
+
+        if resolved_pixel_size_um is None:
+            resolved_pixel_size_um = _pixel_size_from_imagej_tags(tf.pages[0], imagej_meta, path.name)
+        if resolved_frame_interval_min is None:
+            finterval_s = imagej_meta.get("finterval")
+            if finterval_s is None:
+                raise ValueError(
+                    f"{path.name}: no ImageJ 'finterval' metadata found "
+                    "(this file may not be an ImageJ hyperstack). Pass "
+                    "frame_interval_min explicitly."
+                )
+            resolved_frame_interval_min = float(finterval_s) / 60.0
+
+    wavelength_nm = wavelength_override
+    if wavelength_nm is None:
+        wavelength_nm = _wavelength_from_channel_name(path.stem, list(config.channel_map))
+        if wavelength_nm is None:
+            raise ValueError(
+                f"{path.name}: could not resolve channel identity from the "
+                f"filename against known laser lines {sorted(config.channel_map)}. "
+                "Pass wavelength_override explicitly."
+            )
+
+    role = config.channel_role(wavelength_nm).role
+    return ChannelStack(
+        role=role,
+        wavelength_nm=wavelength_nm,
+        data=arr,
+        pixel_size_um=resolved_pixel_size_um,
+        frame_interval_min=resolved_frame_interval_min,
         source_path=str(path),
     )
