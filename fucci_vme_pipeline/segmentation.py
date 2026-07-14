@@ -52,6 +52,12 @@ def run_cellpose_sam(image_stack: np.ndarray, config: PipelineConfig) -> np.ndar
     (the default), matching Cellpose's own recommended pattern -- on CPU,
     Cellpose-SAM runs at roughly a minute per single small tile, so a silent
     fallback would make a real run appear to hang rather than fail fast.
+
+    Prints per-frame progress: large frames (Cellpose-SAM tiles images into
+    fixed 256x256 patches internally, so a 2048x2048 frame means dozens of
+    tiles through a fairly heavy transformer backbone) can each take real
+    time, and with no progress output there'd be no way to tell "still
+    working" from "actually hung" during a long real-data run.
     """
     from cellpose import core, models  # lazy: heavy PyTorch dependency
 
@@ -66,7 +72,9 @@ def run_cellpose_sam(image_stack: np.ndarray, config: PipelineConfig) -> np.ndar
 
     model = models.CellposeModel(gpu=True, pretrained_model=config.cellpose_pretrained_model)
     labels = np.zeros_like(image_stack, dtype=np.int32)
-    for t in range(image_stack.shape[0]):
+    n_frames = image_stack.shape[0]
+    for t in range(n_frames):
+        print(f"Segmenting frame {t + 1}/{n_frames}...", flush=True)
         mask, _, _ = model.eval(
             image_stack[t],
             diameter=config.cellpose_diameter,
