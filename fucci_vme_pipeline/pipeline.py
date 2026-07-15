@@ -213,6 +213,26 @@ def _add_dimensionality_reduction(df: pd.DataFrame, config: PipelineConfig) -> p
     return df
 
 
+def reclassify(df: pd.DataFrame, config: PipelineConfig) -> pd.DataFrame:
+    """Re-applies only the stages that depend on tunable classification
+    thresholds (`mitosis_condensation_threshold`, `phase_gate_threshold`)
+    to an already fully-processed output table.
+
+    Skips ingestion, segmentation, tracking, per-track normalization, and
+    infection classification entirely -- none of those depend on these
+    thresholds, and their outputs (`condensation_score`, `cdt1_norm`/
+    `slbp_norm`/`geminin_norm`, `is_infected`) are already saved columns
+    in the input CSV. This is the "cheap, adjustable" side of the
+    pipeline's architecture: re-tune a threshold and see the result in
+    seconds of CPU time, without re-running GPU-bound segmentation or
+    tracking again.
+    """
+    df = classify_cell_cycle(df, config)
+    df = compute_mphase_duration(df)
+    df = mask_cell_cycle_for_infected(df)
+    return df
+
+
 def run_demo(config: PipelineConfig, max_frames: int | None = None) -> pd.DataFrame:
     """Full pipeline on synthetic data -- no real files, no cellpose/GPU
     needed. The fast sanity check: confirms every stage's glue works before
@@ -335,12 +355,42 @@ def main() -> None:
         help="Required for TIFF input unless the file has ImageJ hyperstack calibration metadata",
     )
     parser.add_argument("--max-frames", type=int, default=None, help="Truncate to the first N frames")
+    parser.add_argument(
+        "--reclassify-csv",
+        type=str,
+        help=(
+            "Path to an existing pipeline output CSV. Re-applies ONLY the "
+            "classification thresholds below to it -- skips ingestion, "
+            "segmentation, and tracking entirely, since condensation_score, "
+            "geminin_norm etc. are already saved columns. Use this to "
+            "re-tune a threshold in seconds without spending GPU time again."
+        ),
+    )
+    parser.add_argument(
+        "--mitosis-condensation-threshold",
+        type=float,
+        default=None,
+        help="Overrides config.mitosis_condensation_threshold (PLACEHOLDER default 0.6 -- almost certainly needs tuning per dataset)",
+    )
+    parser.add_argument(
+        "--phase-gate-threshold",
+        type=float,
+        default=None,
+        help="Overrides config.phase_gate_threshold (default 0.5)",
+    )
     parser.add_argument("--out-csv", type=str, required=True)
     args = parser.parse_args()
 
     config = PipelineConfig()
+    if args.mitosis_condensation_threshold is not None:
+        config.mitosis_condensation_threshold = args.mitosis_condensation_threshold
+    if args.phase_gate_threshold is not None:
+        config.phase_gate_threshold = args.phase_gate_threshold
 
-    if args.demo:
+    if args.reclassify_csv:
+        df = pd.read_csv(args.reclassify_csv)
+        df = reclassify(df, config)
+    elif args.demo:
         df = run_demo(config, max_frames=args.max_frames)
     else:
         channels = _load_channels(args, config)
