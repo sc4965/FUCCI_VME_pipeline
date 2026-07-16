@@ -2,17 +2,35 @@
 pipeline output table, for building/validating classifiers against real
 confirmed examples rather than a hand-tuned heuristic threshold alone.
 
-The matching tolerance matters more than it looks: an annotator marks a
-point anywhere within a clicked nucleus, not necessarily its exact
-centroid, so `max_distance_px` needs to cover a realistic nucleus radius --
-confirmed via direct testing on real data that a too-tight tolerance
-(20px) rejected the large majority of correctly-corresponding annotations.
-A *much* larger, unexplained mismatch (found via a random-point baseline
-comparison -- median real nearest-object distance statistically
-indistinguishable from picking uniformly random points in the frame) turned
-out to mean the annotations were made against the wrong acquisition
-position entirely, not a tolerance problem -- worth checking for that
-class of mismatch before assuming a bigger tolerance will fix things.
+The matching tolerance is a real, load-bearing tradeoff, not a minor
+detail -- confirmed empirically on real spot2 data by sweeping
+`max_distance_px` from 50 to 200px and checking downstream classifier
+performance at each:
+
+- Too tight (20-40px) rejects the majority of genuinely correct
+  annotations, since an annotator marks a point near a nucleus, not
+  necessarily its exact centroid.
+- Too loose (150-200px), in a densely-packed real field (~59px average
+  inter-cell spacing here), starts silently matching annotations to the
+  WRONG neighboring cell instead of the intended one. This showed up as a
+  real, measurable effect: the Geminin signal for `mitotic`-labeled
+  matches was diluted from a clean ~2x separation from `non_mitotic` at
+  60px down to almost no separation at 150-200px, and end-to-end
+  classifier precision/recall dropped from 0.85/0.85 (at 80px) to
+  0.68/0.65 (at 100px) purely from this contamination.
+- 80px was the empirically best balance found for this dataset (cleanest
+  signal while still keeping enough examples per class to train on) --
+  it is NOT a universal constant, and should be re-validated the same way
+  (sweep + check downstream separation/performance) for any new dataset,
+  since it depends on real cell density and annotator click precision,
+  both of which can vary.
+
+A separate failure mode, much larger and unrelated to tolerance tuning:
+a random-point baseline comparison (median real nearest-object distance
+statistically indistinguishable from picking uniformly random points in
+the frame) revealed annotations made against the wrong acquisition
+position entirely. Worth ruling that out first, before tuning tolerance,
+if matching looks bad in a new dataset.
 """
 from __future__ import annotations
 
@@ -33,7 +51,7 @@ def load_annotations(path: str) -> pd.DataFrame:
 def match_annotations_to_objects(
     annotations: pd.DataFrame,
     object_df: pd.DataFrame,
-    max_distance_px: float = 40.0,
+    max_distance_px: float = 80.0,
     label_to_population: dict[str, str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Nearest-neighbor matches each annotation to the closest segmented
