@@ -28,6 +28,7 @@ def _make_matched_annotations(n_per_class: int = 15, seed: int = 0) -> pd.DataFr
             "eccentricity": rng.normal(0.9, 0.05, n_per_class),
             "area": rng.normal(300, 20, n_per_class),
             "mean_intensity": rng.normal(400, 30, n_per_class),
+            "geminin": rng.normal(600, 40, n_per_class),  # high: condensation alone isn't enough, Geminin must co-occur
             "label": "mitotic",
         }
     )
@@ -37,6 +38,7 @@ def _make_matched_annotations(n_per_class: int = 15, seed: int = 0) -> pd.DataFr
             "eccentricity": rng.normal(0.85, 0.05, 3),
             "area": rng.normal(310, 20, 3),
             "mean_intensity": rng.normal(390, 30, 3),
+            "geminin": rng.normal(580, 40, 3),
             "label": "dividing",
         }
     )
@@ -46,6 +48,7 @@ def _make_matched_annotations(n_per_class: int = 15, seed: int = 0) -> pd.DataFr
             "eccentricity": rng.normal(0.2, 0.1, n_per_class),
             "area": rng.normal(500, 40, n_per_class),
             "mean_intensity": rng.normal(150, 20, n_per_class),
+            "geminin": rng.normal(200, 40, n_per_class),  # low
             "label": "non_mitotic",
         }
     )
@@ -55,6 +58,7 @@ def _make_matched_annotations(n_per_class: int = 15, seed: int = 0) -> pd.DataFr
             "eccentricity": rng.normal(0.3, 0.1, 5),
             "area": rng.normal(2500, 200, 5),
             "mean_intensity": rng.normal(800, 50, 5),
+            "geminin": rng.normal(50, 20, 5),  # infected cells don't express FUCCI-4 reporters at all
             "label": "infected",
         }
     )
@@ -106,10 +110,10 @@ def test_predict_applies_trained_model_to_new_data():
     result = train_and_evaluate(X, y)
 
     new_mitotic = pd.DataFrame(
-        {"condensation_score": [0.6], "eccentricity": [0.9], "area": [300], "mean_intensity": [400]}
+        {"condensation_score": [0.6], "eccentricity": [0.9], "area": [300], "mean_intensity": [400], "geminin": [600]}
     )
     new_non_mitotic = pd.DataFrame(
-        {"condensation_score": [0.1], "eccentricity": [0.2], "area": [500], "mean_intensity": [150]}
+        {"condensation_score": [0.1], "eccentricity": [0.2], "area": [500], "mean_intensity": [150], "geminin": [200]}
     )
     assert predict(result["model"], new_mitotic)[0] == 1
     assert predict(result["model"], new_non_mitotic)[0] == 0

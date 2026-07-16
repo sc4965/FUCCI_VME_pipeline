@@ -4,18 +4,29 @@ heuristic.
 
 Deliberately NOT a CNN: with an annotated set of dozens (not hundreds+ per
 class) of examples, a simple classifier on top of already-computed
-segmentation-time features (`condensation_score`, `eccentricity`, `area`,
-`mean_intensity`) is far more data-efficient than a model that has to
-learn its own features from raw pixels. If this ceiling turns out to be
-too low -- i.e. these features genuinely don't separate real mitotic cells
-from confusable ones -- that's the signal to invest in a CNN, not before.
+segmentation-time features is far more data-efficient than a model that
+has to learn its own features from raw pixels. If this ceiling turns out
+to be too low -- i.e. these features genuinely don't separate real
+mitotic cells from confusable ones -- that's the signal to invest in a
+CNN, not before.
+
+`geminin` (raw per-object mean intensity in the 640nm channel) is included
+deliberately, not an oversight to fix later: the hand-tuned heuristic
+(`classify_cell_cycle`) always required condensed chromatin AND high
+Geminin together, never condensation alone -- an earlier version of this
+classifier omitted Geminin and, unsurprisingly, `condensation_score` alone
+showed almost no separation between mitotic/dividing/non_mitotic on real
+annotated data. `geminin` here is the raw per-object intensity (available
+directly from segmentation), not the per-track-normalized `geminin_norm`
+the heuristic uses -- deliberately, so this classifier doesn't inherit the
+tracking-reliability issues found elsewhere in the pipeline.
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-DEFAULT_FEATURE_COLS = ["condensation_score", "eccentricity", "area", "mean_intensity"]
+DEFAULT_FEATURE_COLS = ["condensation_score", "eccentricity", "area", "mean_intensity", "geminin"]
 
 
 def prepare_training_data(
