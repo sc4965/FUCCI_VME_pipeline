@@ -61,7 +61,13 @@ class PipelineConfig:
     mitosis_condensation_threshold: float = 0.6  # PLACEHOLDER: tune against annotated mitotic frames
 
     # --- Stage 5: infection classification ---
-    infection_gate_method: str = "otsu"  # "otsu" | "gmm"
+    infection_gate_method: str = "otsu"  # "otsu" | "gmm" | "manual"
+    infection_manual_threshold: float | None = None  # required if infection_gate_method == "manual"
+    # Otsu/GMM both assume a genuinely bimodal population; on a true mock/
+    # uninfected sample (no real second population), they will still force
+    # SOME split, which can mislabel the brightest tail of ordinary cells
+    # as "infected". "manual" bypasses that assumption entirely with a
+    # fixed, user-supplied cutoff.
 
     # --- Stage 6: neighbor / exposure ---
     neighbor_mode: str = "radius"  # "radius" | "delaunay"
