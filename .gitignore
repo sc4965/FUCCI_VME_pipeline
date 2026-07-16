@@ -12,3 +12,6 @@ venv/
 *.csv
 *.png
 *.h5
+
+# exception: hand-annotated ground truth is small and deliberately versioned
+!annotations/*.csv
