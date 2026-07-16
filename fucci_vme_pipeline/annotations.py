@@ -34,9 +34,23 @@ def match_annotations_to_objects(
     annotations: pd.DataFrame,
     object_df: pd.DataFrame,
     max_distance_px: float = 40.0,
+    label_to_population: dict[str, str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Nearest-neighbor matches each annotation to the closest segmented
     object in the same frame, within `max_distance_px`.
+
+    `label_to_population`, if given, restricts each annotation's candidate
+    objects to only its expected population before the nearest-neighbor
+    search -- e.g. `{"infected": "large_candidate"}` keeps an `infected`
+    annotation from ever matching a nearby nuclear-scale object, and
+    (implicitly, since it's just excluded from that population) keeps a
+    `mitotic`/`dividing`/`non_mitotic` annotation from matching a nearby
+    infected cell's much larger blob. Labels not present in the mapping
+    are unrestricted. Matters in a densely-packed real field: found that
+    plain nearest-neighbor search (no population restriction) can grab
+    the wrong population's object entirely when cells are closer together
+    than the matching tolerance needs to be to accommodate real click
+    imprecision.
 
     Returns (matched, unmatched). `matched` has all of `object_df`'s
     columns plus `label` and `match_distance_px`; `unmatched` has the
@@ -49,6 +63,8 @@ def match_annotations_to_objects(
 
     for _, ann in annotations.iterrows():
         frame_objects = object_df[object_df["frame"] == ann["frame"]]
+        if label_to_population and ann["label"] in label_to_population:
+            frame_objects = frame_objects[frame_objects["population"] == label_to_population[ann["label"]]]
         if frame_objects.empty:
             unmatched_rows.append(ann)
             continue

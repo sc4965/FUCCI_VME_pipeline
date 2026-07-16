@@ -52,6 +52,49 @@ def test_matches_nearest_of_several_candidates():
     assert matched.iloc[0]["condensation_score"] == 0.5  # the close one, not the others
 
 
+def test_population_restriction_avoids_cross_population_mismatch():
+    # a mitotic annotation sits closer to a large infected blob than to the
+    # real (slightly farther) nuclear-scale object it actually refers to --
+    # without population restriction it would wrongly grab the blob
+    annotations = pd.DataFrame({"frame": [0], "x": [100.0], "y": [100.0], "label": ["mitotic"]})
+    object_df = pd.DataFrame(
+        {
+            "frame": [0, 0],
+            "x": [105.0, 140.0],
+            "y": [105.0, 140.0],
+            "population": ["large_candidate", "nuclear_candidate"],
+            "condensation_score": [0.01, 0.6],
+        }
+    )
+    label_to_population = {"infected": "large_candidate", "mitotic": "nuclear_candidate", "dividing": "nuclear_candidate", "non_mitotic": "nuclear_candidate"}
+
+    unrestricted, _ = match_annotations_to_objects(annotations, object_df, max_distance_px=100.0)
+    assert unrestricted.iloc[0]["population"] == "large_candidate", "sanity: closer object is the blob, not the nucleus"
+
+    restricted, _ = match_annotations_to_objects(
+        annotations, object_df, max_distance_px=100.0, label_to_population=label_to_population
+    )
+    assert restricted.iloc[0]["population"] == "nuclear_candidate"
+    assert restricted.iloc[0]["condensation_score"] == 0.6
+
+
+def test_infected_annotation_restricted_to_large_candidate_population():
+    annotations = pd.DataFrame({"frame": [0], "x": [100.0], "y": [100.0], "label": ["infected"]})
+    object_df = pd.DataFrame(
+        {
+            "frame": [0, 0],
+            "x": [102.0, 130.0],
+            "y": [102.0, 130.0],
+            "population": ["nuclear_candidate", "large_candidate"],
+        }
+    )
+    label_to_population = {"infected": "large_candidate"}
+    matched, _ = match_annotations_to_objects(
+        annotations, object_df, max_distance_px=100.0, label_to_population=label_to_population
+    )
+    assert matched.iloc[0]["population"] == "large_candidate"
+
+
 def test_no_objects_in_frame_is_unmatched_not_an_error():
     annotations = pd.DataFrame({"frame": [5], "x": [100.0], "y": [100.0], "label": ["mitotic"]})
     object_df = pd.DataFrame({"frame": [0], "x": [100.0], "y": [100.0], "condensation_score": [0.5]})
@@ -84,6 +127,8 @@ if __name__ == "__main__":
     _run("matches within tolerance", test_matches_within_tolerance)
     _run("rejects beyond tolerance", test_rejects_beyond_tolerance)
     _run("matches nearest of several candidates", test_matches_nearest_of_several_candidates)
+    _run("population restriction avoids cross-population mismatch", test_population_restriction_avoids_cross_population_mismatch)
+    _run("infected annotation restricted to large_candidate population", test_infected_annotation_restricted_to_large_candidate_population)
     _run("no objects in frame is unmatched, not an error", test_no_objects_in_frame_is_unmatched_not_an_error)
     _run("nearest_distances reports even beyond tolerance", test_nearest_distances_reports_even_beyond_tolerance)
     _run("random baseline exceeds real close-match median", test_random_baseline_is_high_when_real_annotations_are_close)
