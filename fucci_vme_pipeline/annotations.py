@@ -93,6 +93,13 @@ def match_annotations_to_objects(
             matched = frame_objects.loc[min_idx].copy()
             matched["label"] = ann["label"]
             matched["match_distance_px"] = dists[min_idx]
+            # the object's own x/y (above) get overwritten nowhere here, but are
+            # easy to mistake for the click itself during visual review -- keep
+            # the original annotation coordinates too, under their own names,
+            # so show_annotation_match can plot the actual click separately from
+            # wherever nearest-neighbor matching landed.
+            matched["ann_x"] = ann["x"]
+            matched["ann_y"] = ann["y"]
             matched_rows.append(matched)
         else:
             unmatched_rows.append(ann)

@@ -38,6 +38,20 @@ def test_rejects_beyond_tolerance():
     assert len(unmatched) == 1
 
 
+def test_matched_output_preserves_original_click_coordinates():
+    # the object's centroid can legitimately sit away from the click (that's
+    # the whole point of a matching tolerance) -- ann_x/ann_y must survive
+    # untouched so visual review can compare the two, not just show the
+    # matched object's position mislabeled as "your annotation"
+    annotations = pd.DataFrame({"frame": [0], "x": [105.0], "y": [95.0], "label": ["mitotic"]})
+    object_df = pd.DataFrame({"frame": [0], "x": [100.0], "y": [100.0], "condensation_score": [0.5]})
+    matched, _ = match_annotations_to_objects(annotations, object_df, max_distance_px=40.0)
+    assert matched.iloc[0]["ann_x"] == 105.0
+    assert matched.iloc[0]["ann_y"] == 95.0
+    assert matched.iloc[0]["x"] == 100.0  # still the matched OBJECT's centroid, unchanged
+    assert matched.iloc[0]["y"] == 100.0
+
+
 def test_matches_nearest_of_several_candidates():
     annotations = pd.DataFrame({"frame": [0], "x": [102.0], "y": [98.0], "label": ["mitotic"]})
     object_df = pd.DataFrame(
