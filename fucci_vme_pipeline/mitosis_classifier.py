@@ -32,8 +32,8 @@ DEFAULT_FEATURE_COLS = ["condensation_score", "eccentricity", "area", "mean_inte
 def prepare_training_data(
     matched: pd.DataFrame,
     feature_cols: list[str] = DEFAULT_FEATURE_COLS,
-    positive_labels: tuple[str, ...] = ("mitotic", "dividing"),
-    exclude_labels: tuple[str, ...] = ("infected",),
+    positive_labels: tuple[str, ...] = ("mitotic",),
+    exclude_labels: tuple[str, ...] = ("infected", "dividing"),
 ) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     """Builds (X, y, original_label) from matched annotations.
 
@@ -41,10 +41,20 @@ def prepare_training_data(
     the separate infection classifier, not for mitosis, per this dataset's
     annotation scheme.
 
-    `dividing` is folded into the positive class alongside `mitotic` by
-    default, since a handful of examples isn't enough to train a reliable
-    separate third class -- but the original label is returned too, so
-    this can be revisited once more `dividing` examples exist.
+    `dividing` is ALSO excluded by default, not folded into the positive
+    class -- an earlier version did fold it in, on the theory that a
+    handful of examples isn't enough to train a reliable separate third
+    class. That turned out to actively hurt the classifier: `dividing`
+    (anaphase/telophase/cytokinesis) consistently showed LOW Geminin on
+    real annotated data (112-113, close to or below the `non_mitotic`
+    baseline) in contrast to `mitotic` (metaphase)'s high Geminin --
+    correct biology, since Geminin is degraded at the END of M-phase, not
+    present throughout it the way metaphase is. Training the positive
+    class on a mix of high-Geminin and low-Geminin examples taught the
+    model a contradictory signal for that feature. Excluding `dividing`
+    (like `infected`) until there are enough examples to give it a real
+    third class is the safer default; the original label is still
+    returned, so this can be revisited later.
     """
     usable = matched[~matched["label"].isin(exclude_labels)].copy()
     missing_features = [c for c in feature_cols if c not in usable.columns]

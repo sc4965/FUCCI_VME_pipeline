@@ -65,11 +65,11 @@ def _make_matched_annotations(n_per_class: int = 15, seed: int = 0) -> pd.DataFr
     return pd.concat([mitotic, dividing, non_mitotic, infected], ignore_index=True)
 
 
-def test_prepare_training_data_excludes_infected_and_folds_dividing_into_positive():
+def test_prepare_training_data_excludes_infected_and_dividing():
     matched = _make_matched_annotations()
     X, y, original_label = prepare_training_data(matched)
     assert "infected" not in original_label.unique()
-    assert y[original_label == "dividing"].eq(1).all()
+    assert "dividing" not in original_label.unique()
     assert y[original_label == "mitotic"].eq(1).all()
     assert y[original_label == "non_mitotic"].eq(0).all()
 
@@ -80,7 +80,7 @@ def test_train_and_evaluate_separates_clearly_distinct_classes():
     result = train_and_evaluate(X, y)
     assert result["precision"] > 0.8, result["precision"]
     assert result["recall"] > 0.8, result["recall"]
-    assert result["n_positive"] == 18  # 15 mitotic + 3 dividing
+    assert result["n_positive"] == 15  # mitotic only -- dividing is excluded, not folded in
     assert result["n_negative"] == 15
 
 
@@ -120,7 +120,7 @@ def test_predict_applies_trained_model_to_new_data():
 
 
 if __name__ == "__main__":
-    _run("prepare_training_data excludes infected, folds dividing into positive", test_prepare_training_data_excludes_infected_and_folds_dividing_into_positive)
+    _run("prepare_training_data excludes infected and dividing", test_prepare_training_data_excludes_infected_and_dividing)
     _run("train_and_evaluate separates clearly distinct classes", test_train_and_evaluate_separates_clearly_distinct_classes)
     _run("train_and_evaluate rejects too few examples", test_train_and_evaluate_rejects_too_few_examples)
     _run("train_and_evaluate rejects single-class data", test_train_and_evaluate_rejects_single_class)
