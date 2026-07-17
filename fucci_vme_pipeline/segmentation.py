@@ -115,38 +115,36 @@ def _eccentricity_from_moments(var_y: float, var_x: float, cov_yx: float) -> flo
     return float(np.sqrt(max(1.0 - ratio, 0.0)))
 
 
-def _condensation_score(ys: np.ndarray, xs: np.ndarray, intensity: np.ndarray) -> float:
-    """Intensity-weighted mean-squared radius, normalized against this
-    SAME object's own footprint filled uniformly -- not an idealized disk.
+def _condensation_score(intensity: np.ndarray) -> float:
+    """Gini coefficient of the intensity distribution within an object's
+    footprint: 0 = perfectly uniform/diffuse, 1 = maximally concentrated
+    into a small fraction of the object's pixels.
 
-    An earlier version normalized against a uniform disk of the same area,
-    which conflates shape elongation with intensity concentration: an
-    elongated mitotic chromatin mass (correctly high eccentricity) scored
-    condensation_score == 0 regardless of how concentrated its actual
-    fluorescence was, simply because its spatial extent along the long axis
-    exceeds what a disk of equal area would have. Found by running the full
-    pipeline end to end on a synthetic forced-mitosis frame, not by the
-    per-function unit tests (which only tested condensation on round shapes
-    and eccentricity on uniformly-lit shapes -- never the conjunction).
-    Using the object's own actual pixel footprint as the "uniform" reference
-    isolates "is intensity concentrated within this shape" from "what shape
-    is this" (already captured separately by eccentricity).
+    Two earlier versions of this function measured concentration as a
+    SPATIAL moment relative to the object's center (first against an
+    idealized disk, then against the object's own footprint) -- both
+    implicitly assume condensed material forms a solid blob near the
+    centroid. Found on real annotated data that this fails for two real
+    mitotic chromatin configurations: a RING of condensed chromatin has
+    its brightest pixels at the object's edge, and a bilobed/"two
+    rectangles" pattern has its brightest pixels split into two clusters
+    flanking a dim gap at the center -- both score as artificially
+    diffuse under a center-relative metric, despite being genuinely
+    condensed material. The Gini coefficient only looks at the intensity
+    VALUES themselves, never their positions, so it scores concentration
+    correctly regardless of spatial arrangement (blob, ring, or split).
     """
+    if intensity.size == 0:
+        return 0.0
     total_intensity = intensity.sum()
     if total_intensity <= 0:
         return 0.0
-    wcy = (intensity * ys).sum() / total_intensity
-    wcx = (intensity * xs).sum() / total_intensity
-    r2_weighted = (intensity * ((ys - wcy) ** 2 + (xs - wcx) ** 2)).sum() / total_intensity
 
-    ucy = ys.mean()
-    ucx = xs.mean()
-    r2_uniform = ((ys - ucy) ** 2 + (xs - ucx) ** 2).mean()
-    if r2_uniform <= 0:
-        return 0.0
-
-    score = 1.0 - (r2_weighted / r2_uniform)
-    return float(np.clip(score, 0.0, 1.0))
+    sorted_intensity = np.sort(intensity)
+    n = sorted_intensity.size
+    rank = np.arange(1, n + 1)
+    gini = (2.0 * np.sum(rank * sorted_intensity) - (n + 1) * total_intensity) / (n * total_intensity)
+    return float(np.clip(gini, 0.0, 1.0))
 
 
 def mean_intensity_by_label(labels: np.ndarray, intensity_image: np.ndarray) -> dict[int, float]:
@@ -197,7 +195,7 @@ def regionprops_from_labels(
         intensity = intensity_image[ys, xs].astype(np.float64)
         var_y, var_x, cov_yx = _second_moments(ys.astype(np.float64), xs.astype(np.float64))
         eccentricity = _eccentricity_from_moments(var_y, var_x, cov_yx)
-        condensation = _condensation_score(ys.astype(np.float64), xs.astype(np.float64), intensity)
+        condensation = _condensation_score(intensity)
         population = (
             "nuclear_candidate" if area_px <= config.max_nuclear_candidate_area_px else "large_candidate"
         )

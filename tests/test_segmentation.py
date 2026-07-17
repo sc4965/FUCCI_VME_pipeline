@@ -101,6 +101,66 @@ def test_condensation_score_on_elongated_shape_with_concentrated_intensity():
     )
 
 
+def test_condensation_score_on_ring_pattern():
+    # a real mitotic pattern: condensed chromatin forming a ring partway
+    # between the object's center and edge (e.g. spindle viewed end-on),
+    # with a dim center and dim outer band -- a center-relative spatial
+    # metric would score this as diffuse (bright pixels sit away from the
+    # centroid), but the material genuinely is concentrated, just not in
+    # a central blob. Regression test for exactly this failure mode.
+    size = 41
+    yy, xx = np.mgrid[0:size, 0:size]
+    cy = cx = size // 2
+    disk = (yy - cy) ** 2 + (xx - cx) ** 2 <= 18**2
+    labels = disk.astype(np.int32)
+
+    uniform_intensity = np.where(disk, 80.0, 0.0)
+
+    ring_intensity = np.full((size, size), 20.0)
+    ring = ((yy - cy) ** 2 + (xx - cx) ** 2 >= 9**2) & ((yy - cy) ** 2 + (xx - cx) ** 2 <= 11**2)
+    ring_intensity[ring] = 400.0
+    ring_intensity = np.where(disk, ring_intensity, 0.0)
+
+    config = PipelineConfig(min_object_area_px=5)
+    uniform_props = regionprops_from_labels(labels, uniform_intensity, config)[0]
+    ring_props = regionprops_from_labels(labels, ring_intensity, config)[0]
+
+    assert uniform_props.condensation_score < 0.1, uniform_props.condensation_score
+    assert ring_props.condensation_score > 0.3, (
+        "a ring of concentrated intensity must score as condensed, not diffuse, "
+        "even though its bright pixels sit away from the object's center",
+        ring_props.condensation_score,
+    )
+
+
+def test_condensation_score_on_bilobed_pattern():
+    # the other real pattern described: condensed chromatin appearing as
+    # two separate bright regions (e.g. "two rectangles") within one
+    # connected segmented object, with a dim gap between them at the
+    # object's center -- same failure mode as the ring, opposite geometry.
+    size = 41
+    labels = np.zeros((size, size), dtype=np.int32)
+    labels[15:26, 2:39] = 1  # one wide connected object
+
+    uniform_intensity = np.where(labels == 1, 80.0, 0.0)
+
+    bilobed_intensity = np.full((size, size), 20.0)
+    bilobed_intensity[16:25, 4:14] = 400.0  # left rectangle
+    bilobed_intensity[16:25, 27:37] = 400.0  # right rectangle
+    bilobed_intensity = np.where(labels == 1, bilobed_intensity, 0.0)
+
+    config = PipelineConfig(min_object_area_px=5)
+    uniform_props = regionprops_from_labels(labels, uniform_intensity, config)[0]
+    bilobed_props = regionprops_from_labels(labels, bilobed_intensity, config)[0]
+
+    assert uniform_props.condensation_score < 0.1, uniform_props.condensation_score
+    assert bilobed_props.condensation_score > 0.3, (
+        "two separated bright regions flanking a dim center must score as "
+        "condensed, not diffuse",
+        bilobed_props.condensation_score,
+    )
+
+
 def test_min_area_filter_drops_debris():
     labels = np.zeros((30, 30), dtype=np.int32)
     labels[5:7, 5:7] = 1  # 4px speck
@@ -130,6 +190,8 @@ if __name__ == "__main__":
     _run("elongated rectangle has high eccentricity", test_elongated_rectangle_is_high_eccentricity)
     _run("concentrated intensity scores higher than uniform", test_concentrated_intensity_scores_higher_than_uniform)
     _run("condensation score on elongated shape with concentrated intensity", test_condensation_score_on_elongated_shape_with_concentrated_intensity)
+    _run("condensation score on ring pattern", test_condensation_score_on_ring_pattern)
+    _run("condensation score on bilobed pattern", test_condensation_score_on_bilobed_pattern)
     _run("min_object_area_px filters out debris", test_min_area_filter_drops_debris)
     _run("population split by coarse area pre-filter", test_population_split_by_area)
     print("\nAll segmentation tests passed.")
