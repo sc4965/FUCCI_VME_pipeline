@@ -110,16 +110,25 @@ def _merge_tracks_onto_objects(
     simple linker (called without an intensity image) report the same
     plain pixel-mean centroid as `regionprops_from_labels`.
 
-    A small fraction of objects can legitimately have NO match: btrack's
-    hypothesis optimizer can classify some initial detections as
-    `Fates.FALSE_POSITIVE` (likely segmentation noise, not real cells) and
-    exclude them from the final track list entirely -- confirmed against a
-    real run where this showed up as a small (~0.1%), bounded gap that
-    tracked with the run's own reported false-positive count. That's
-    correct behavior (btrack rejecting noise), not a broken merge, so a
-    small drop is tolerated here. A drop beyond `max_drop_fraction` is NOT
-    tolerated -- that would suggest the (frame, x, y) join assumption
-    itself has broken, and the output shouldn't be trusted until
+    Uses a LEFT join (object table on the left), not an inner join: an
+    object with no matching track is KEPT, with `track_id`/`parent_track_id`/
+    `lineage_id` as NaN, rather than silently discarded. This matters
+    because "no matching track" isn't always noise -- confirmed on real
+    data via direct label-at-click checks against the raw segmentation
+    mask that a genuinely well-segmented condensed mitotic chromatin object
+    can fail to link into its own otherwise-continuous track, because
+    btrack's appearance/motion hypothesis model doesn't expect a tracked
+    cell's appearance to change that sharply. An inner join here would
+    delete that object with no trace it ever existed; keeping it as an
+    untracked row lets `stitch_short_gaps` (called right after this)
+    attempt to bridge it back into its track using position alone. Any
+    object still untracked after that stitching attempt is dropped by the
+    caller -- same end result as before for objects that really are noise.
+
+    A drop beyond `max_drop_fraction` (now measured as the untracked
+    fraction, before stitching) is NOT tolerated -- that would suggest the
+    (frame, x, y) join assumption itself has broken, not just ordinary
+    false-positive rejection, and the output shouldn't be trusted until
     investigated.
     """
     if track_df.empty:
@@ -135,25 +144,25 @@ def _merge_tracks_onto_objects(
     merged = left.merge(
         right.drop(columns=["x", "y"]),
         on=["frame", "_x_round", "_y_round"],
-        how="inner",
+        how="left",
     ).drop(columns=["_x_round", "_y_round"])
 
-    n_dropped = len(object_subset) - len(merged)
-    drop_fraction = n_dropped / len(object_subset) if len(object_subset) else 0.0
+    n_untracked = int(merged["track_id"].isna().sum())
+    untracked_fraction = n_untracked / len(merged) if len(merged) else 0.0
 
-    if n_dropped > 0:
-        if drop_fraction > max_drop_fraction:
+    if n_untracked > 0:
+        if untracked_fraction > max_drop_fraction:
             raise RuntimeError(
-                f"Track merge dropped {n_dropped}/{len(object_subset)} objects "
-                f"({drop_fraction:.1%}), exceeding the {max_drop_fraction:.1%} "
-                "tolerance for expected false-positive rejection. The "
-                "(frame, x, y) join assumption may have broken -- do not "
-                "trust this output until investigated."
+                f"Track merge left {n_untracked}/{len(merged)} objects "
+                f"({untracked_fraction:.1%}) untracked, exceeding the "
+                f"{max_drop_fraction:.1%} tolerance for expected false-positive "
+                "rejection. The (frame, x, y) join assumption may have broken -- "
+                "do not trust this output until investigated."
             )
         print(
-            f"Note: {n_dropped}/{len(object_subset)} objects ({drop_fraction:.2%}) had no "
-            "matching track -- consistent with btrack's false-positive "
-            "rejection of likely noise detections, not necessarily an error."
+            f"Note: {n_untracked}/{len(merged)} objects ({untracked_fraction:.2%}) had no "
+            "matching track -- kept as untracked rows for stitch_short_gaps to "
+            "attempt to recover, rather than dropped outright."
         )
     if len(merged) > len(object_subset):
         raise RuntimeError(
@@ -163,6 +172,91 @@ def _merge_tracks_onto_objects(
             "until investigated."
         )
     return merged
+
+
+def stitch_short_gaps(
+    df: pd.DataFrame, max_gap_frames: int = 3, max_stitch_distance_px: float = 60.0
+) -> pd.DataFrame:
+    """Bridges short gaps in existing tracks using untracked objects, purely
+    by position -- no appearance features involved.
+
+    Motivation: `_merge_tracks_onto_objects` now keeps objects btrack didn't
+    link (see its docstring) instead of discarding them. Some of those are
+    genuine noise, but some are real cells btrack's appearance/motion
+    hypothesis model failed to link into an otherwise-good track, because
+    that one frame's appearance changed too sharply (confirmed on real data
+    for condensed mitotic chromatin specifically). Since the goal here is
+    only to bridge a short gap in a track that's already mostly right, this
+    deliberately ignores appearance entirely and asks a much narrower
+    question: is there an untracked object sitting close to where this
+    track's own recent motion says it should be?
+
+    For each track, for each gap of length 1..max_gap_frames, linearly
+    interpolates the expected (x, y) at each missing frame from the track's
+    position just before and just after the gap, and claims the closest
+    untracked object at that exact frame if it's within
+    `max_stitch_distance_px`. Each untracked object can be claimed at most
+    once. Anything still untracked afterward is left for the caller to drop,
+    same as before this function existed -- this only recovers gaps inside
+    tracks btrack mostly got right, not brand-new tracks, and is not a
+    substitute for validating btrack's own division/false-positive behavior.
+    """
+    tracked = df[df["track_id"].notna()].copy()
+    orphans = df[df["track_id"].isna()].copy()
+
+    if tracked.empty:
+        return tracked  # nothing tracked at all -- surface as empty, don't keep raw untracked rows
+    if orphans.empty:
+        return df  # nothing to stitch; df already equals tracked here
+
+    lineage_cols = [c for c in ("parent_track_id", "lineage_id", "generation") if c in tracked.columns]
+    stitched_rows = []
+    claimed_orphan_indices: set = set()
+
+    for track_id, group in tracked.groupby("track_id"):
+        frames = sorted(group["frame"].unique())
+        for i in range(len(frames) - 1):
+            gap_size = frames[i + 1] - frames[i] - 1
+            if not (0 < gap_size <= max_gap_frames):
+                continue
+
+            before = group[group["frame"] == frames[i]].iloc[0]
+            after = group[group["frame"] == frames[i + 1]].iloc[0]
+            span = frames[i + 1] - frames[i]
+
+            for missing_frame in range(frames[i] + 1, frames[i + 1]):
+                frac = (missing_frame - frames[i]) / span
+                expected_x = before["x"] + frac * (after["x"] - before["x"])
+                expected_y = before["y"] + frac * (after["y"] - before["y"])
+
+                candidates = orphans[
+                    (orphans["frame"] == missing_frame) & (~orphans.index.isin(claimed_orphan_indices))
+                ]
+                if candidates.empty:
+                    continue
+
+                dists = np.sqrt((candidates["x"] - expected_x) ** 2 + (candidates["y"] - expected_y) ** 2)
+                best_idx = dists.idxmin()
+                if dists[best_idx] <= max_stitch_distance_px:
+                    stitched = candidates.loc[best_idx].copy()
+                    stitched["track_id"] = track_id
+                    for col in lineage_cols:
+                        stitched[col] = before[col]
+                    stitched_rows.append(stitched)
+                    claimed_orphan_indices.add(best_idx)
+
+    n_stitched = len(stitched_rows)
+    n_still_untracked = len(orphans) - n_stitched
+    if n_stitched > 0:
+        print(
+            f"Stitched {n_stitched} object(s) into existing track gaps by position alone; "
+            f"{n_still_untracked} object(s) remain untracked."
+        )
+        return pd.concat([tracked, pd.DataFrame(stitched_rows)], ignore_index=True)
+
+    if len(orphans) > 0:
+        print(f"No stitchable gaps found; {len(orphans)} object(s) remain untracked.")
+    return tracked
 
 
 def _drop_ambiguous_duplicate_track_frames(df: pd.DataFrame) -> pd.DataFrame:
@@ -252,6 +346,9 @@ def run_demo(config: PipelineConfig, max_frames: int | None = None) -> pd.DataFr
     fucci4_merged = _merge_tracks_onto_objects(
         fucci4_objects, fucci4_tracks, max_drop_fraction=config.track_merge_max_drop_fraction
     )
+    fucci4_merged = stitch_short_gaps(
+        fucci4_merged, config.gap_stitch_max_gap_frames, config.gap_stitch_max_distance_px
+    )
 
     infected_objects = object_table[object_table["population"] == "large_candidate"]
     centroids_per_frame = [
@@ -267,6 +364,8 @@ def run_demo(config: PipelineConfig, max_frames: int | None = None) -> pd.DataFr
         if not infected_objects.empty
         else infected_objects
     )
+    if not infected_merged.empty:
+        infected_merged = infected_merged[infected_merged["track_id"].notna()]
 
     df = pd.concat([fucci4_merged, infected_merged], ignore_index=True)
     df = _drop_ambiguous_duplicate_track_frames(df)
@@ -416,6 +515,9 @@ def main() -> None:
         fucci4_merged = _merge_tracks_onto_objects(
         fucci4_objects, fucci4_tracks, max_drop_fraction=config.track_merge_max_drop_fraction
     )
+        fucci4_merged = stitch_short_gaps(
+            fucci4_merged, config.gap_stitch_max_gap_frames, config.gap_stitch_max_distance_px
+        )
 
         infected_objects = object_table[object_table["population"] == "large_candidate"]
         centroids_per_frame = [
@@ -431,6 +533,8 @@ def main() -> None:
             if not infected_objects.empty
             else infected_objects
         )
+        if not infected_merged.empty:
+            infected_merged = infected_merged[infected_merged["track_id"].notna()]
 
         df = pd.concat([fucci4_merged, infected_merged], ignore_index=True)
         df = _drop_ambiguous_duplicate_track_frames(df)

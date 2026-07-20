@@ -74,6 +74,20 @@ class PipelineConfig:
     btrack_max_search_radius_um: float = 30.0  # max frame-to-frame displacement for FUCCI-4 tracking
     infected_link_max_distance_um: float = 30.0  # simple-linker gate for the infected population
     track_merge_max_drop_fraction: float = 0.02  # tolerated fraction of objects btrack may reject as false positives
+    # Gap-stitching (FUCCI-4 population only): found on real data that
+    # btrack's appearance/motion-based hypothesis linking can drop a single
+    # frame from an otherwise-continuous track when that frame's object
+    # looks very different from its neighbors -- confirmed via condensed
+    # mitotic chromatin specifically, using direct label-at-click checks
+    # against the raw segmentation mask (the object IS correctly segmented;
+    # btrack just doesn't link it). Rather than tuning btrack's own
+    # appearance model, this bridges short gaps in existing tracks using
+    # position alone: interpolate the expected position across the gap and
+    # look for the nearest untracked object at that exact frame. PLACEHOLDER
+    # defaults -- validate against real annotated tracks the same way
+    # annotations.max_distance_px was validated, not assumed universal.
+    gap_stitch_max_gap_frames: int = 3
+    gap_stitch_max_distance_px: float = 60.0
 
     # --- Stage 4: cell-cycle classification ---
     min_track_coverage: float = 0.6  # fraction of movie frames a track must span to be analyzed
