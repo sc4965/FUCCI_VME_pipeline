@@ -43,9 +43,31 @@ class PipelineConfig:
     min_object_area_px: int = 20  # PLACEHOLDER: tune against annotated mitotic frames
     max_nuclear_candidate_area_px: int = 2000  # coarse pre-filter, generous by design
     cellpose_pretrained_model: str = "cpsam_v2"  # current Cellpose-SAM default (as of the models actually installed)
-    cellpose_diameter: float | None = None  # None => Cellpose-SAM auto-estimates
-    cellpose_flow_threshold: float = 0.4
-    cellpose_cellprob_threshold: float = 0.0  # PLACEHOLDER: lower to catch small/dim objects
+    # The four cellpose_* values below are one validated bundle, not four
+    # independent knobs -- found on real spot2 data that Cellpose-SAM (this
+    # pretrained model, un-fine-tuned) misses ~90% of condensed mitotic
+    # chromatin objects at its own default/auto-estimated scale, because a
+    # metaphase chromatin mass is notably smaller than the interphase nuclei
+    # the auto-estimate effectively calibrates to. Explicitly forcing a
+    # smaller diameter recovered 18/20 held-out annotated misses; looser
+    # flow/cellprob/min_size alone (diameter still auto) recovered none of
+    # them, so diameter is the load-bearing change here, not the others.
+    # Confirmed NOT to fragment normal-sized nuclei/infected blobs when run
+    # on full frames (~10% object-count increase, not the 2-3x+ that would
+    # indicate oversegmentation).
+    #
+    # If this pretrained model is later replaced with one fine-tuned on
+    # hand-corrected masks (see project notes), these four are the first
+    # things to revisit -- a model trained on this dataset's own object-size
+    # mix may not need to be told to expect small objects at all. Revert to
+    # cellpose_diameter=None, cellpose_flow_threshold=0.4,
+    # cellpose_cellprob_threshold=0.0, cellpose_min_size=15 to restore
+    # Cellpose's own untuned defaults for comparison against a fine-tuned
+    # model, rather than assuming this bundle still applies.
+    cellpose_diameter: float | None = 15.0
+    cellpose_flow_threshold: float = 0.6
+    cellpose_cellprob_threshold: float = -2.0
+    cellpose_min_size: int = 5  # Cellpose's own internal small-object filter, separate from min_object_area_px below
     require_gpu: bool = True  # fail loudly if no GPU rather than silently running ~minutes/frame on CPU
 
     # --- Stage 3: tracking ---

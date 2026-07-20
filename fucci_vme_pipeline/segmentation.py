@@ -80,6 +80,7 @@ def run_cellpose_sam(image_stack: np.ndarray, config: PipelineConfig) -> np.ndar
             diameter=config.cellpose_diameter,
             flow_threshold=config.cellpose_flow_threshold,
             cellprob_threshold=config.cellpose_cellprob_threshold,
+            min_size=config.cellpose_min_size,
         )
         labels[t] = mask
     return labels
