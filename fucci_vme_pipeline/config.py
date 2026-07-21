@@ -71,6 +71,28 @@ class PipelineConfig:
     require_gpu: bool = True  # fail loudly if no GPU rather than silently running ~minutes/frame on CPU
 
     # --- Stage 3: tracking ---
+    tracking_method: str = "btrack"  # "btrack" | "simple"
+    # "btrack": division/death-aware Bayesian tracking (see tracking.py). Its
+    # appearance/motion hypothesis model can reject a genuinely well-
+    # segmented detection as a false positive when a tracked cell's
+    # appearance changes sharply -- confirmed on real data for condensed
+    # mitotic chromatin specifically (direct label-at-click checks against
+    # the raw segmentation mask showed a correctly-sized object existing
+    # exactly where the final table showed nothing nearby). Its internal
+    # "dummy object" gap-filling is also the confirmed cause of large
+    # duplicate-(track_id, frame) drops in `_drop_ambiguous_duplicate_track_frames`
+    # on noisier real data.
+    # "simple": reuses `link_infected_population`'s pure nearest-centroid
+    # linking (Hungarian algorithm, gated by btrack_max_search_radius_um)
+    # for the FUCCI-4 population too, instead of btrack. Ignores appearance
+    # entirely, so it won't reject a detection just for looking different
+    # frame to frame -- directly avoids both problems above. The real cost:
+    # no division/lineage detection at all for this population either;
+    # parent_track_id/lineage_id become the same meaningless placeholders
+    # (-1 / == track_id) the infected population already has. Anything
+    # depending on true lineage (m_phase_duration across a real division,
+    # Stage 7 fate transitions) is not meaningful under "simple" and should
+    # be treated as a cross-sectional, per-frame analysis instead.
     btrack_max_search_radius_um: float = 30.0  # max frame-to-frame displacement for FUCCI-4 tracking
     infected_link_max_distance_um: float = 30.0  # simple-linker gate for the infected population
     track_merge_max_drop_fraction: float = 0.02  # tolerated fraction of objects btrack may reject as false positives

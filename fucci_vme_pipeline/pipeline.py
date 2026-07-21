@@ -102,6 +102,33 @@ def _labels_for_population(labels: np.ndarray, object_table: pd.DataFrame, popul
     return filtered
 
 
+def _track_fucci4(
+    fucci4_labels: np.ndarray,
+    fucci4_objects: pd.DataFrame,
+    n_total_frames: int,
+    pixel_size_um: float,
+    frame_interval_min: float,
+    config: PipelineConfig,
+) -> pd.DataFrame:
+    """Dispatches to btrack or the simple nearest-centroid linker for the
+    FUCCI-4 population, per `config.tracking_method` (see config.py for the
+    tradeoff). The simple path reuses `link_infected_population` unchanged
+    -- same tidy (frame, x, y, track_id, parent_track_id, lineage_id,
+    generation, time_min) schema either way, so nothing downstream needs to
+    know which one ran.
+    """
+    if config.tracking_method == "simple":
+        centroids_per_frame = [
+            fucci4_objects[fucci4_objects["frame"] == t][["y", "x"]].to_numpy() for t in range(n_total_frames)
+        ]
+        return link_infected_population(
+            centroids_per_frame, config.btrack_max_search_radius_um, pixel_size_um, frame_interval_min
+        )
+    if config.tracking_method == "btrack":
+        return track_fucci4_population(fucci4_labels, pixel_size_um, frame_interval_min, config)
+    raise ValueError(f"Unknown tracking_method {config.tracking_method!r}; expected 'btrack' or 'simple'.")
+
+
 def _merge_tracks_onto_objects(
     object_subset: pd.DataFrame, track_df: pd.DataFrame, max_drop_fraction: float = 0.02
 ) -> pd.DataFrame:
@@ -259,6 +286,39 @@ def stitch_short_gaps(
     return tracked
 
 
+_INFECTED_TRACK_ID_OFFSET = 1_000_000_000
+
+
+def _namespace_infected_track_ids(infected_merged: pd.DataFrame) -> pd.DataFrame:
+    """Offsets the infected population's track_id/lineage_id (and any real,
+    non-founder parent_track_id) by a large constant so they can never
+    collide with the FUCCI-4 population's track IDs once concatenated.
+
+    Both populations' tracks are numbered independently starting from 0 --
+    by `track_fucci4_population`'s own btrack-internal IDs when
+    `tracking_method="btrack"`, or by `link_infected_population` itself for
+    both populations when `tracking_method="simple"`. Either way, nothing
+    guarantees the two numbering schemes stay disjoint, and a genuine
+    collision (FUCCI-4 track 5 and infected track 5 both landing on frame
+    12, say) is indistinguishable from a real duplicate-identity conflict to
+    `_drop_ambiguous_duplicate_track_frames` -- confirmed on synthetic demo
+    data, where using the simple linker for both populations made this
+    collision certain rather than incidental, and wrongly dropped both
+    populations' real rows as "ambiguous". This makes the two ID spaces
+    disjoint by construction instead of relying on coincidence.
+    """
+    if infected_merged.empty:
+        return infected_merged
+    out = infected_merged.copy()
+    out["track_id"] = out["track_id"] + _INFECTED_TRACK_ID_OFFSET
+    if "lineage_id" in out.columns:
+        out["lineage_id"] = out["lineage_id"] + _INFECTED_TRACK_ID_OFFSET
+    if "parent_track_id" in out.columns:
+        real_parent = out["parent_track_id"] != -1
+        out.loc[real_parent, "parent_track_id"] = out.loc[real_parent, "parent_track_id"] + _INFECTED_TRACK_ID_OFFSET
+    return out
+
+
 def _drop_ambiguous_duplicate_track_frames(df: pd.DataFrame) -> pd.DataFrame:
     """Drops every row belonging to a (track_id, frame) pair that appears
     more than once.
@@ -341,8 +401,8 @@ def run_demo(config: PipelineConfig, max_frames: int | None = None) -> pd.DataFr
     n_total_frames = labels.shape[0]
 
     fucci4_labels = _labels_for_population(labels, object_table, "nuclear_candidate")
-    fucci4_tracks = track_fucci4_population(fucci4_labels, pixel_size_um, frame_interval_min, config)
     fucci4_objects = object_table[object_table["population"] == "nuclear_candidate"]
+    fucci4_tracks = _track_fucci4(fucci4_labels, fucci4_objects, n_total_frames, pixel_size_um, frame_interval_min, config)
     fucci4_merged = _merge_tracks_onto_objects(
         fucci4_objects, fucci4_tracks, max_drop_fraction=config.track_merge_max_drop_fraction
     )
@@ -366,6 +426,7 @@ def run_demo(config: PipelineConfig, max_frames: int | None = None) -> pd.DataFr
     )
     if not infected_merged.empty:
         infected_merged = infected_merged[infected_merged["track_id"].notna()]
+    infected_merged = _namespace_infected_track_ids(infected_merged)
 
     df = pd.concat([fucci4_merged, infected_merged], ignore_index=True)
     df = _drop_ambiguous_duplicate_track_frames(df)
@@ -455,6 +516,22 @@ def main() -> None:
     )
     parser.add_argument("--max-frames", type=int, default=None, help="Truncate to the first N frames")
     parser.add_argument(
+        "--tracking-method",
+        type=str,
+        choices=["btrack", "simple"],
+        default=None,
+        help=(
+            "Overrides config.tracking_method for the FUCCI-4 population. 'simple' skips "
+            "btrack entirely, using pure nearest-centroid position linking instead (same "
+            "approach already used for the infected population) -- avoids btrack's "
+            "appearance-based false-positive rejection and dummy-object gap-filling (both "
+            "confirmed causing real data loss), at the cost of losing division/lineage "
+            "detection (parent_track_id/lineage_id become meaningless placeholders, so "
+            "m_phase_duration across a real division and Stage 7 fate transitions are not "
+            "meaningful in this mode -- treat output as a cross-sectional, per-frame dataset)."
+        ),
+    )
+    parser.add_argument(
         "--reclassify-csv",
         type=str,
         help=(
@@ -485,6 +562,8 @@ def main() -> None:
         config.mitosis_condensation_threshold = args.mitosis_condensation_threshold
     if args.phase_gate_threshold is not None:
         config.phase_gate_threshold = args.phase_gate_threshold
+    if args.tracking_method is not None:
+        config.tracking_method = args.tracking_method
 
     if args.reclassify_csv:
         df = pd.read_csv(args.reclassify_csv)
@@ -510,8 +589,10 @@ def main() -> None:
         n_total_frames = labels.shape[0]
 
         fucci4_labels = _labels_for_population(labels, object_table, "nuclear_candidate")
-        fucci4_tracks = track_fucci4_population(fucci4_labels, nuclear.pixel_size_um, nuclear.frame_interval_min, config)
         fucci4_objects = object_table[object_table["population"] == "nuclear_candidate"]
+        fucci4_tracks = _track_fucci4(
+            fucci4_labels, fucci4_objects, n_total_frames, nuclear.pixel_size_um, nuclear.frame_interval_min, config
+        )
         fucci4_merged = _merge_tracks_onto_objects(
         fucci4_objects, fucci4_tracks, max_drop_fraction=config.track_merge_max_drop_fraction
     )
