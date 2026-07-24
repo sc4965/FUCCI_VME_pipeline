@@ -1,7 +1,6 @@
 frame,x,y,label
 0,855,1509,mitotic
 0,1029,1611,mitotic
-0,1957,805,mitotic
 0,1584,1765,mitotic
 1,851,1510,mitotic
 1,1579,1761,mitotic
@@ -13,12 +12,9 @@ frame,x,y,label
 4,716,1651,mitotic
 4,1038,1613,mitotic
 3,1032,1619,mitotic
-3,1038,1663,mitotic
-4,1034,1663,mitotic
 5,1023,1170,mitotic
 5,1043,1620,mitotic
 6,1055,1624,mitotic
-6,1023,1168,mitotic
 7,1036,1165,mitotic
 7,1051,1627,mitotic
 13,1525,910,mitotic
@@ -132,3 +128,5 @@ frame,x,y,label
 29,604,505,infected
 29,451,677,infected
 29,1323,1056,infected
+0,1944,814,mitotic
+0,1966,804,mitotic
