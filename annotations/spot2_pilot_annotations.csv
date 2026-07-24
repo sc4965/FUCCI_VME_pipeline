@@ -3,7 +3,7 @@ frame,x,y,label
 0,1029,1611,mitotic
 0,1957,805,mitotic
 0,1584,1765,mitotic
-1,851,1510,dividing
+1,851,1510,mitotic
 1,1579,1761,mitotic
 2,1036,1616,mitotic
 0,710,1647,mitotic
@@ -19,7 +19,7 @@ frame,x,y,label
 5,1043,1620,mitotic
 6,1055,1624,mitotic
 6,1023,1168,mitotic
-7,1036,1165,dividing
+7,1036,1165,mitotic
 7,1051,1627,mitotic
 13,1525,910,mitotic
 14,1522,908,mitotic
@@ -27,7 +27,7 @@ frame,x,y,label
 16,1513,912,mitotic
 17,1505,912,mitotic
 18,1506,916,mitotic
-19,1497,925,dividing
+19,1497,925,mitotic
 19,1622,1392,mitotic
 2,1765,633,non_mitotic
 3,885,412,non_mitotic
@@ -78,10 +78,10 @@ frame,x,y,label
 26,159,1457,mitotic
 25,915,1136,mitotic
 26,912,1138,mitotic
-25,750,249,dividing
+25,750,249,mitotic
 27,910,1144,mitotic
 27,153,1463,mitotic
-28,148,1468,dividing
+28,148,1468,mitotic
 27,1788,1603,mitotic
 28,1788,1600,mitotic
 29,1800,1597,mitotic
@@ -93,7 +93,7 @@ frame,x,y,label
 34,815,841,mitotic
 35,814,845,mitotic
 36,804,845,mitotic
-37,807,841,dividing
+37,807,841,mitotic
 39,1057,1407,mitotic
 21,829,415,non_mitotic
 21,426,113,non_mitotic
